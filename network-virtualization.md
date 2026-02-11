@@ -1,258 +1,557 @@
-To understand container networking and Kubernetes data paths, it is essential to begin at the lowest layer of the networking stack: the physical hardware and the Linux kernel. All higher-level abstractions such as pods, network namespaces, virtual interfaces, bridges, and CNI plugins operate on top of the Linux networking subsystem. Therefore, a clear understanding of how a packet is received and processed by the operating system is fundamental.
+Network Flow
 
-Networking fundamentally begins at the Network Interface Card (NIC). The NIC is the physical hardware device responsible for receiving and transmitting network frames. When a packet arrives from the network medium (copper or fiber), it is first handled entirely by hardware before any involvement of container runtimes or orchestration systems.
 
-The following section explains, step by step, how a packet transitions from physical hardware into the Linux kernel networking stack.
+Introduction
 
-At the absolute lowest level, networking begins in hardware.
+In a containerized Linux system such as Kubernetes, a network packet appears to travel through many components: physical interfaces, kernel structures, virtual devices, bridges, namespaces, and finally into a container.
 
-A packet physically arrives at the NIC as electrical signals (or light if fiber). The NIC hardware has receive (RX) rings — circular buffers in memory. Using DMA (Direct Memory Access), the NIC writes packet bytes directly into RAM without CPU copying. The NIC maintains descriptors pointing to memory buffers.
+However, at the architectural level, there is only one real networking system: the Linux kernel network stack.
 
-When a packet is written into an RX buffer, the NIC raises an interrupt (IRQ). Modern systems use NAPI (New API) to reduce interrupt storms. Instead of one interrupt per packet, the kernel switches the NIC into polling mode under load.
+All containers, Pods, virtual interfaces, and bridges are software constructs built on top of this single kernel.
 
-The driver allocates an sk_buff structure. This is the fundamental Linux packet object. It contains metadata: protocol, length, checksum state, pointers to headers, routing info, socket association, etc.
+To understand container networking correctly, one must trace the exact journey of a packet from the moment it arrives as electrical signals on a physical cable to the moment it is delivered to an application inside a container.
 
-At this moment, Kubernetes does not exist. Pods do not exist. This is raw Linux.
+Physical Layer: The Only Hardware
 
-Now the packet enters the Linux networking stack.
+Networking begins in hardware.
 
-Before routing, several hook points may trigger.
+A packet arrives at the server through an Ethernet cable (electrical signals) or fiber (light pulses). It reaches the Physical Network Interface Card (NIC), such as eth0 or enp3s0.
 
-If XDP is attached, it runs at the driver level before the packet becomes a full sk_buff. XDP can drop, redirect, or pass the packet. XDP is extremely early and very fast because it avoids memory allocation overhead.
+The NIC contains receive (RX) rings — circular descriptor buffers mapped in system memory. These buffers are not copied by the CPU. Instead, the NIC uses Direct Memory Access (DMA) to write packet bytes directly into RAM.
 
-If not dropped, the packet becomes an sk_buff and continues upward.
+Each RX descriptor contains:
 
-Then the packet hits TC ingress (Traffic Control ingress hook). eBPF programs attached here can inspect and modify the packet. Cilium often attaches here for policy enforcement and service handling.
+A pointer to a memory buffer
 
-Now routing decision happens.
+Packet length
 
-The kernel examines destination IP and consults the routing table of the current network namespace. The routing table lookup is done via FIB (Forwarding Information Base) using longest prefix match.
+Status flags
 
-Important: routing table depends on namespace. Each namespace has its own FIB. But the routing engine code is shared. Only the data differs.
+Offload metadata (checksum status, VLAN tags, etc.)
 
-If destination is local (an IP assigned to an interface in this namespace), the packet goes to local delivery. If not, it is forwarded.
+When a frame is received:
 
-Now we must understand namespaces properly.
+The NIC writes packet bytes into RAM via DMA
 
-A network namespace is not a miniature kernel. It is a data structure that holds:
+Updates the RX descriptor
 
-Interface list
+Raises an interrupt (IRQ)
 
-Routing tables
+Modern Linux uses NAPI (New API) to reduce interrupt storms. Under heavy load:
 
-ARP table
+One interrupt switches the NIC into polling mode
 
-Netfilter tables
+The kernel polls multiple packets in batches
 
-Socket bindings
+Reduces CPU overhead and interrupt amplification
 
-When a process runs inside a pod, its socket is bound to that namespace. So when it sends a packet, the routing lookup happens in that namespace’s routing table.
+At this stage:
 
-But physically the packet is still inside the same kernel memory.
+No containers exist
 
-When Kubernetes creates a pod, CNI performs:
+No Kubernetes exists
 
-create netns
+This is raw Linux networking
 
-create veth pair
+The only real hardware involved is the physical NIC.
 
-move one end into pod netns
+Kernel Entry: From Hardware to Software Object
 
-assign IP
+When the interrupt is raised:
 
-set default route via veth
+The CPU executes the interrupt handler.
 
-configure ARP/neigh entries
+Control transfers to the NIC driver (e.g., e1000, ixgbe, mlx5).
 
-Inside the pod, eth0 appears. But this is just the veth endpoint moved into that namespace.
+The driver reads packet data from the DMA buffer.
 
-When a container sends data:
+The kernel allocates an sk_buff structure.
 
-Application → libc → socket() → write() → system call → kernel.
+The sk_buff (socket buffer) is the fundamental Linux packet abstraction.
 
-The kernel constructs TCP segments. TCP maintains state machine: SYN, ACK, window, congestion control. TCP segmentation happens before IP routing.
+It contains:
 
-Then IP layer wraps TCP segment into IP packet. Then routing lookup occurs in pod namespace.
+Pointer to packet data
 
-The default route inside pod typically points to the veth peer (host side). So packet exits via eth0 (veth). That means the sk_buff is queued onto the veth transmit function.
+Length
 
-veth driver immediately injects the packet into the peer interface receive path in the host namespace. No physical transmission. It is a direct function call inside kernel.
+Protocol type
 
-Now the packet is in host namespace.
+Interface index
 
-This is the key crossing point. This is where illusion meets node reality.
+Timestamp
 
-From here onward, all cluster-wide decisions happen.
+Routing metadata
 
-If Linux bridge is used, the host veth is attached to bridge (like br0 or cni0). Bridge maintains forwarding database (FDB) mapping MAC to port. The bridge looks at destination MAC.
+Checksum state
 
-If destination MAC corresponds to another pod’s veth, it forwards internally. If not, it forwards to physical NIC.
+Socket association
 
-Bridge is L2. It does not understand IP routing deeply. It switches frames.
+Connection tracking information
 
-If routing-based CNI is used instead, the host namespace has routes like:
+The packet is now a software object inside kernel memory.
 
-10.244.2.0/24 via nodeB_IP
+The driver passes the sk_buff into:
 
-That means kernel routing will send packet to physical NIC directly without L2 switching domain.
+netif_receive_skb()
 
-Now service IP handling.
 
-When pod sends packet to a ClusterIP, that IP does not exist as interface. So normally routing would treat it as external.
+This is the main entry into the Linux network stack.
 
-But with kube-proxy (iptables mode), NAT rules intercept packet in netfilter PREROUTING chain. It rewrites destination IP to one of backend pods.
+From this point forward, everything happens in software.
 
-iptables works by rule chains. It evaluates each rule sequentially until match. In large clusters, thousands of rules mean slower traversal.
+Three Possible Packet Paths in the Kernel
 
-With eBPF (Cilium), the service lookup happens earlier at TC or XDP. eBPF uses hash maps keyed by service IP + port. Lookup is O(1). Destination IP is rewritten in-place in packet header. Then routing proceeds normally.
+Once inside the kernel, a packet may follow one of three architectural models.
 
-This means Service is implemented as controlled destination NAT.
+Packet Processing (PP) – Traditional Path
 
-Now policy enforcement.
+This is the full Linux network stack path.
 
-NetworkPolicy in Kubernetes is label-based. Cilium assigns identity numbers to pods based on labels. eBPF maps store allowed identity pairs.
+The packet travels through:
 
-When packet passes TC ingress or egress hook, Cilium eBPF program extracts source identity and destination identity, checks map, and decides allow or drop.
+Netfilter hooks (iptables)
 
-This happens inside kernel before routing completes.
+Routing lookup (FIB)
 
-Why not bypass?
+Bridge forwarding (if bridged)
 
-Because namespace isolation, routing, NAT, and policy enforcement are all kernel functions. If you bypass kernel, none of these run.
+Traffic Control (TC)
 
-DPDK works differently.
+Socket delivery
 
-In DPDK, NIC is bound to user-space driver (vfio or uio). The kernel network stack is detached. Packets are polled directly by user-space application. That application must implement:
+This is the default behavior used by:
 
-L2 switching
+Traditional Linux networking
 
-L3 routing
+Basic Docker
 
-TCP/IP stack (optional)
+iptables-based kube-proxy
 
-NAT
+Complexity: O(n) when many iptables rules exist
+Scalability: Degrades as rule count grows
 
-firewall
+Packet Bypass (PB) – DPDK Model
 
-load balancing
+In this model:
 
-If you try to combine DPDK with Kubernetes pod networking, you must reimplement the entire cluster networking logic in user space. That’s why DPDK is used for specialized workloads (NFV, telecom), not general pod networking.
+The NIC is bound to a userspace driver (e.g., vfio)
 
-Now pod-to-pod same node.
+Packets are polled directly from NIC memory
 
-Packet path:
+No interrupts
 
-App A → TCP → IP → veth → host namespace → routing sees destination IP belongs to another local veth → deliver directly → veth → Pod B → TCP → App B.
+No sk_buff
 
-No physical NIC.
-No encapsulation.
-No underlay involvement.
+No kernel TCP/IP stack
 
-Pod-to-pod cross node (routing-based CNI).
+Flow:
 
-App A → veth → host routing → physical NIC → underlay network → node B NIC → routing → veth → Pod B.
+NIC → DPDK driver → Userspace application
 
-Overlay-based (VXLAN).
 
-At host A, packet is encapsulated into UDP VXLAN header. Outer destination = node B IP. Underlay network routes outer packet. At node B, kernel decapsulates and injects inner packet into pod routing path.
+Advantages:
 
-Encapsulation adds ~50 bytes overhead. That reduces MTU. If MTU not adjusted, fragmentation or drops happen.
+Maximum throughput
 
-Now why Cilium instead of Flannel?
+Millions of packets per second
 
-Flannel primarily provides connectivity. It uses simple forwarding or VXLAN. It does not implement identity-based policy deeply. It relies on iptables for NAT.
+Disadvantages:
 
-Cilium unifies service load balancing, policy, encryption, and observability using eBPF. It reduces dependency on iptables and kube-proxy.
+No kernel networking
 
-Now deeper into kernel internal flow for local delivery.
+No namespaces
 
-After routing determines packet is local:
+No TCP stack unless reimplemented
 
-IP layer hands packet to transport layer (TCP or UDP). TCP checks socket table for matching 4-tuple (src IP, src port, dst IP, dst port). If match found, packet is queued into socket receive buffer.
+Not compatible with standard Kubernetes networking
 
-Then wakeup event triggers process scheduler. The process reads via recv() and gets data into user space.
+Used in:
 
-Reverse happens on send.
+Telecom
 
-Now about why bypass cannot happen “somewhere else”.
+High-frequency trading
 
-Packet must pass through at least one of:
+Specialized packet processors
 
-driver receive
+Packet Filter (PF) – eBPF Model
 
-routing lookup
+eBPF allows programmable logic inside the kernel.
 
-transport processing
+It does not bypass the kernel.
+It extends the kernel.
 
-If you bypass before routing, kernel never sees packet → namespace isolation broken.
-If you bypass after routing but before transport, socket matching breaks.
-If you bypass at NIC egress, you still needed kernel to decide route.
+eBPF programs can attach at multiple hook points:
 
-So complete bypass only works if entire networking stack is replaced.
+XDP (earliest, before sk_buff creation)
 
-eBPF does not bypass. It inserts programmable logic at safe hook points.
+TC ingress/egress
 
-Linux bridge vs OVS vs routing:
+Netfilter
 
-Linux bridge: simple L2 domain.
-OVS: programmable L2/L3, supports OpenFlow, can integrate with DPDK.
-Routing-based: pure L3, no broadcast domain, more scalable.
+Socket layer
 
-Namespaces:
+Capabilities:
 
-Each namespace has independent:
+Drop packets early
 
-lo interface
+Rewrite destination IP (Service load balancing)
 
-eth0 (veth)
+Enforce security policy
 
-routing table
+Perform NAT
+
+Inspect Layer 7 traffic (HTTP, gRPC)
+
+Performance:
+
+Hash map lookups (O(1))
+
+JIT compiled to native machine code
+
+Nearly DPDK-level speed while remaining in kernel
+
+Used by:
+
+Cilium
+
+Modern high-performance CNIs
+
+Network Namespaces: The Isolation Mechanism
+
+A network namespace is a separate instance of the network stack.
+
+Each namespace contains its own:
+
+Interfaces
+
+IP addresses
+
+Routing table
 
 ARP cache
 
-But actual packet buffer memory is shared in kernel heap.
+Netfilter rules
 
-vNIC:
+Sockets
 
-Not hardware.
-Implements net_device struct.
-Queues sk_buffs.
-Calls peer receive function.
+Containers run inside their own network namespaces.
 
-NIC:
+This means:
 
-Hardware.
-Has RX/TX rings.
-Performs checksum offload, segmentation offload (TSO/GSO), GRO (Generic Receive Offload).
+Each container sees its own eth0
 
-Important performance detail:
+Each container believes it has its own network stack
 
-GRO merges packets before passing up stack.
-GSO segments packets before NIC transmit.
+But physically, all namespaces share the same kernel and NIC
 
-These optimizations happen inside kernel, invisible to pod.
+Namespaces provide isolation of view, not separate hardware.
 
-Final absolute truth model:
+Virtual Ethernet Pair (veth)
 
-Physical NIC receives.
-Driver builds sk_buff.
-Optional XDP.
-TC ingress (policy/service).
-Routing lookup.
-Bridge or direct routing.
-Optional encapsulation.
-TC egress.
-NIC transmit.
+Containers cannot access the physical NIC directly.
 
-On receive side:
+Instead, Linux creates a veth pair.
 
-NIC → driver → XDP → TC ingress → routing → veth → namespace → transport → socket → process.
+A veth pair behaves like a virtual Ethernet cable:
 
-Pods never own hardware.
-Namespaces never execute routing code.
-CNI never touches live packets.
-Only kernel networking stack processes packets.
-eBPF modifies kernel decision logic.
-DPDK replaces kernel stack entirely.
+One end remains in the host namespace
 
-Everything else is structured illusion built on one Linux kernel networking engine.
+The other end moves into the container namespace
+
+If a packet enters one end, it immediately appears at the other.
+
+Example:
+
+Host namespace:
+
+veth0
+
+Container namespace:
+
+veth1 (renamed to eth0)
+
+This connects the container’s isolated namespace to the host’s real network stack.
+
+The veth device:
+
+Is not hardware
+
+Does not perform routing
+
+Does not filter packets
+
+Simply transfers frames between namespaces
+
+Software Switching: Linux Bridge and OVS
+
+To allow multiple containers to communicate, the host uses a software switch.
+
+Linux Bridge
+
+A Layer 2 switch inside the kernel.
+
+Functions:
+
+MAC address learning
+
+Frame forwarding
+
+Flooding unknown destinations
+
+Structure:
+
+            br0
+         /   |   \
+     vethA vethB eth0
+
+
+Packets arriving on one port are forwarded to the correct port based on MAC address.
+
+Used by:
+
+Docker default networking
+
+Flannel (bridge mode)
+
+Open vSwitch (OVS)
+
+A programmable software switch.
+
+Supports:
+
+OpenFlow rules
+
+SDN integration
+
+Advanced forwarding logic
+
+DPDK acceleration
+
+Used in:
+
+OpenStack
+
+Large cloud environments
+
+CNI: Container Network Interface
+
+Kubernetes does not implement networking directly.
+
+Instead, when a Pod is created, kubelet invokes a CNI plugin.
+
+CNI responsibilities:
+
+Create network namespace
+
+Create veth pair
+
+Move one end into Pod namespace
+
+Attach host end to bridge or routing table
+
+Assign IP address (IPAM)
+
+Configure routes
+
+CNI configures plumbing.
+
+It does not process packets.
+
+Popular CNIs:
+
+Flannel:
+
+VXLAN overlay
+
+Simple
+
+Bridge-based
+
+Limited policy support
+
+Calico:
+
+BGP routing
+
+iptables or eBPF
+
+Strong NetworkPolicy support
+
+Cilium:
+
+Pure eBPF
+
+Replaces kube-proxy
+
+Identity-based policies
+
+L7 visibility
+
+Observability via Hubble
+
+Why eBPF Replaces iptables
+
+iptables limitations:
+
+Linear rule scanning
+
+O(n) per packet
+
+Thousands of rules in large clusters
+
+Performance degradation
+
+IP-based rules break when Pods restart
+
+eBPF improvements:
+
+Hash map lookups (O(1))
+
+Identity-based security (labels, not IPs)
+
+Survives Pod IP changes
+
+Can inspect Layer 7 traffic
+
+JIT compiled
+
+High performance
+
+Cilium leverages eBPF to:
+
+Implement Service load balancing
+
+Replace kube-proxy
+
+Enforce NetworkPolicy
+
+Provide real-time flow visibility
+
+Complete Packet Flow: External → Pod
+
+Consider an external client sending traffic to a Pod.
+
+Physical NIC:
+
+Receives frame
+
+DMA writes to RAM
+
+IRQ raised
+
+Kernel:
+
+Driver reads buffer
+
+Allocates sk_buff
+
+netif_receive_skb()
+
+eBPF (if installed):
+
+Policy check
+
+NAT (Service → Pod IP rewrite)
+
+Allow or drop
+
+Bridge:
+
+MAC lookup
+
+Forwards to correct veth
+
+veth:
+
+Host end receives frame
+
+Frame appears in container namespace
+
+Container:
+
+eth0 receives packet
+
+Container TCP/IP stack processes it
+
+Application receives data via socket
+
+Throughout this process:
+
+Only one kernel exists
+
+Only one physical NIC exists
+
+Namespaces isolate views
+
+veth connects namespaces
+
+Bridge switches frames
+
+CNI configured topology
+
+eBPF enforces policy
+
+sk_buff carries packet metadata
+
+Final Architecture Summary
+
+Physical NIC is the only hardware device.
+
+The Linux kernel:
+
+Owns the network stack
+
+Allocates sk_buff
+
+Performs routing
+
+Executes eBPF programs
+
+Enforces policy
+
+Network namespaces:
+
+Provide isolated views of networking
+
+Do not move packets themselves
+
+veth pairs:
+
+Connect container namespace to host namespace
+
+Bridges/OVS:
+
+Forward frames between virtual interfaces
+
+CNI:
+
+Configures networking
+
+Does not process packets
+
+Packet paths:
+
+PP: Traditional kernel stack
+
+PF: eBPF-extended kernel stack
+
+PB: Userspace bypass (DPDK)
+
+eBPF:
+
+Replaces iptables
+
+Enables O(1) lookups
+
+Supports identity-based security
+
+Enables L7 inspection
+
+Provides observability (Hubble)
+
+All container networking is a structured illusion built on one kernel and one physical NIC.
+
+The packet always returns to the kernel for a decision.
+
+The kernel is the final authority in packet handling.
