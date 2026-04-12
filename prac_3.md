@@ -156,34 +156,54 @@ Select private_rt → Routes → Edit routes → Add route:
   Target:      NAT Gateway → my_natgw
 → Save changes
 
-
+Associate Private Subnet with Private Route Table
 Select private_rt → Subnet associations → Edit subnet associations →
- prac_3_private → Save associations
+prac_3_private → Save associations
 
- #### VERIFICATION
+#### VERIFICATION
 
- test public EC2 internet access
+✅ 🔹 Verify Public EC2 Internet Access
 
- (sams as prac_2 (chmod and ssh command))
- ping google.com
+After launching your instance in Amazon Web Services:
 
- Test private EC2
+1. Set key permissions
+chmod 400 my-ec2-keypair.pem
+2. SSH into Public EC2
+ssh -i my-ec2-keypair.pem ec2-user@<PUBLIC_EC2_PUBLIC_IP>
+3. Test internet access
+ping google.com
 
- # On your local machine
-ssh-add my-ec2-keypair.pem          # Add key to SSH agent
+✔ If working → Public EC2 has internet access
 
-# SSH to public EC2 with agent forwarding
-ssh -A -i my-ec2-keypair.pem ec2-user@<public-ec2-ip>
+✅ 🔹 Verify Private EC2 Access (via Public EC2 / Bastion)
+Step 1: Add key to SSH agent (on your local machine)
+ssh-add my-ec2-keypair.pem
+Step 2: SSH into Public EC2 with agent forwarding
+ssh -A -i my-ec2-keypair.pem ec2-user@<PUBLIC_EC2_PUBLIC_IP>
 
-# From inside the public EC2, SSH to private EC2
-ssh ec2-user@<private-ec2-private-ip>
+👉 -A = enables forwarding your key to the next hop
 
+Step 3: SSH into Private EC2 (from Public EC2)
+ssh ec2-user@<PRIVATE_EC2_PRIVATE_IP>
 
-Test Private EC2 Can Reach Internet (via NAT)
+✔ If this works → your bastion setup is correct
 
-# From inside the private EC2
-ping google.com           # Should work (via NAT)
-curl ifconfig.me          # Will show the NAT Gateway's Elastic IP, not your instance's private IP
+✅ 🔹 Verify Private EC2 Internet (via NAT Gateway)
+
+Now you are inside the Private EC2:
+
+1. Test connectivity
+ping google.com
+
+✔ Should work → means NAT Gateway is configured correctly
+
+2. Check outbound public IP
+curl ifconfig.me
+
+👉 Output will show:
+
+NAT Gateway Elastic IP
+NOT the private EC2 IP
 
 
 
