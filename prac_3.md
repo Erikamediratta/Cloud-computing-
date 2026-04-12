@@ -113,14 +113,77 @@ Select public_rt → Routes tab → Edit routes → Add route:
 
 <img width="1271" height="389" alt="image" src="https://github.com/user-attachments/assets/39a5d4b3-58a6-42f1-8c39-f68a51655539" />
 
-#### Associate Public Subnet with Public Route Table
 
-Select public-rt → Subnet associations tab → Edit subnet associations →
-public-subnet-1 → Save associations
+Select public_rt → Subnet associations tab → Edit subnet associations →
+prac_3_public → Save associations
 
 Now any instance in public-subnet-1 can reach the internet!
 
 #### CONFIGURE NAT GATEWAY 
+
+ NAT Gateway (Network Address Translation) sits in the public subnet and allows private instances to initiate outbound internet connections (e.g., to download updates), but blocks inbound connections from the internet.
+
+ ALLOCATE AN ELASTIC IP
+
+ VPC → Elastic IPs → Allocate Elastic IP address → Allocate
+Note the Allocation ID: 
+
+
+CREATE NAT GATEWAY
+
+Go to VPC → NAT Gateways → Create NAT gateway
+Configure:
+Name:               my_natgw
+Subnet:           prac_3_public← MUST be in public subnet!
+Connectivity type:  Public
+Elastic IP:         Select the one you just allocated
+Click Create NAT gateway
+
+#### Associate Private Subnet with Private Route Table
+
+
+
+#### CREATE A PRIVATE ROUTE TABLE
+
+vpc ->create route table
+
+configure with name and prac_3_vpc
+
+#### ADD ROUTE TO NAT GATEWAY
+
+Select private_rt → Routes → Edit routes → Add route:
+  Destination: 0.0.0.0/0
+  Target:      NAT Gateway → my_natgw
+→ Save changes
+
+
+Select private_rt → Subnet associations → Edit subnet associations →
+ prac_3_private → Save associations
+
+ #### VERIFICATION
+
+ test public EC2 internet access
+
+ (sams as prac_2 (chmod and ssh command))
+ ping google.com
+
+ Test private EC2
+
+ # On your local machine
+ssh-add my-ec2-keypair.pem          # Add key to SSH agent
+
+# SSH to public EC2 with agent forwarding
+ssh -A -i my-ec2-keypair.pem ec2-user@<public-ec2-ip>
+
+# From inside the public EC2, SSH to private EC2
+ssh ec2-user@<private-ec2-private-ip>
+
+
+Test Private EC2 Can Reach Internet (via NAT)
+
+# From inside the private EC2
+ping google.com           # Should work (via NAT)
+curl ifconfig.me          # Will show the NAT Gateway's Elastic IP, not your instance's private IP
 
 
 
