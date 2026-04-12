@@ -101,6 +101,7 @@ S3 → Select bucket → Upload → Add files → Select all your files → Uplo
 
 <img width="904" height="83" alt="image" src="https://github.com/user-attachments/assets/f301b8fa-e2cc-46d5-8736-e4c8d3118341" />
 
+```
 aws configure
 AWS Access Key ID: <your-key>
 AWS Secret Access Key: <your-secret>
@@ -114,20 +115,38 @@ aws s3 cp webserver.css s3://new-bucket-2026-erika/
 aws s3 ls s3://new-bucket-2026-erika
 pwd
 ls
-
+```
 ### Step 3 — Enable Static Website Hosting
 
 ```
 S3 → Select bucket → Properties tab → Static website hosting →
   Edit → Enable
   Hosting type: Host a static website
-  Index document: index.html
-  Error document: error.html
+  Index document: webserver.html
+
 → Save changes
 ```
+### Step 4 — Configure Permissions (Bucket Policy)
 
-Note the **Bucket website endpoint** — it looks like:
 ```
-http://my-static-website-2024.s3-website-us-east-1.amazonaws.com
+S3 → Select bucket → Permissions tab → Bucket policy → Edit
 ```
+
+Paste this policy (replace `my-static-website-2024` with your bucket name):
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "PublicReadGetObject",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::my-static-website-2024/*"
+        }
+    ]
+}
+```
+#### Access your website 
+
 
