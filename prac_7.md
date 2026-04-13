@@ -118,3 +118,73 @@ openstack network agent list
 openstack image list
 ```
 
+#### for on aws EC2 instance
+
+Launch an instance with ubuntu and t2.medium 
+
+connect via ssh 
+
+```
+ssh -i first_keypair.pem ubuntu@13.203.41.64
+```
+the above mentioned is the public ip example
+
+**Rest all devstack installation will be same**
+
+** local config
+
+```
+[[local|localrc]]
+ADMIN_PASSWORD=secret123
+DATABASE_PASSWORD=secret123
+RABBIT_PASSWORD=secret123
+SERVICE_PASSWORD=secret123
+
+HOST_IP=10.x.x.x   # <-- your EC2 PRIVATE IP
+
+FLAT_INTERFACE=eth0
+
+LOGFILE=/opt/stack/logs/stack.sh.log
+```
+
+FIND PRIVATE IP AS
+
+```
+ip addr
+```
+
+look for
+
+```
+inet 10.x.x.x
+```
+
+ then run devstack step
+
+
+ #### Access dashboard
+
+ devstack will show 
+
+ ```
+http://10.x.x.x/dashboard
+```
+ this is private IP, dont use this 
+
+ use
+
+```
+http://<PUBLIC_IP>/dashboard
+```
+
+ Configure Security Group (VERY IMPORTANT)
+Add inbound rules:
+
+Type	Port	Source
+SSH	22	My IP
+HTTP	80	0.0.0.0/0
+Custom TCP	6080	0.0.0.0/0
+
+👉 Port 6080 = Console access (important for OpenStack
+
+
