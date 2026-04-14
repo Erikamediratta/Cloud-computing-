@@ -32,7 +32,7 @@ roles->create role->select trusted entity-> attach the s3ReadOnlyPolicy->name it
 <img width="1003" height="507" alt="image" src="https://github.com/user-attachments/assets/0c5ba316-ca11-4bd8-acfc-072a00f5eb58" />
 
 
-#### B) Create and assign ;east-privilege Roles to Users
+#### B) Create and assign least-privilege Roles to Users
 
 Create a user,
 Attach minimum permissions->choose attach policies directly, search and attach only what they need (s3ReadOnlyAccess)
