@@ -82,7 +82,77 @@ Now go to permissions tab-> bucket policy->
 This means blocks any upload that isn't encrypted
 
 
-#### Step D Set up a firewall Rule and test it 
+#### Step D Set up a firewall Rule and test it
+
+Create a security group, ADD INBOUND RULES
+
+EC2 → Security Groups → Create security group
+```
+Name:         webserver-strict-sg
+Description:  Strict rules for production web server
+VPC:          your-vpc
+
+Inbound rules:
+  HTTP    | TCP | 80   | 0.0.0.0/0     | Allow public HTTP
+  HTTPS   | TCP | 443  | 0.0.0.0/0     | Allow public HTTPS  
+  SSH     | TCP | 22   | 203.0.113.0/24| Allow SSH from office IP range only
+  
+Outbound rules:
+  HTTP    | TCP | 80   | 0.0.0.0/0     | Allow outbound HTTP (updates)
+  HTTPS   | TCP | 443  | 0.0.0.0/0     | Allow outbound HTTPS
+  DNS     | UDP | 53   | 0.0.0.0/0     | Allow DNS
+  (Remove the default "All traffic" outbound rule)
+```
+
+<img width="1251" height="383" alt="image" src="https://github.com/user-attachments/assets/349d6da4-9cfc-4925-9806-e691a5c7bc71" />
+
+
+
+
+<img width="1242" height="546" alt="image" src="https://github.com/user-attachments/assets/1a7c97dc-7618-4042-8207-983ced48cc8e" />
+
+
+This blocks all other ports by default(no extra rules=denied)
+
+ATTACH THIS SECURITY GROUP TO THE RUNNING EC2 INSTANCE
+
+
+<img width="1049" height="304" alt="image" src="https://github.com/user-attachments/assets/b623c425-7647-46c2-af7b-5038681a5c77" />
+****
+
+#### TEST
+
+
+```
+ssh -i first_keypair.pem ec2-user@<public ip>
+sudo yum update -y
+sudo yum install nginx -y
+sudo systemctl start nginx
+sudo systemctl enable nginx
+sudo systemctl status nginx
+```
+```
+# Test HTTP access (should work if web server running)
+curl http://<ec2-public-ip>
+
+# Test SSH from your IP (should work)
+ssh -i keypair.pem ec2-user@<ec2-public-ip>
+
+# Test a port that's NOT in the rules (should timeout)
+sudo yum install -y nc
+nc -zv <ec2-public-ip> 8080
+# Connection timed out (blocked by security group)
+
+# Test from unauthorized IP for SSH (should be blocked)
+# From a different IP than what's in the rule:
+ssh ec2-user@<ec2-public-ip>
+# ssh: connect to host X.X.X.X port 22: Connection timed out
+```
+
+<img width="1168" height="793" alt="image" src="https://github.com/user-attachments/assets/42983916-b81e-4dad-ad2f-10b34ccddf4c" />
+
+
+
 
 
 
